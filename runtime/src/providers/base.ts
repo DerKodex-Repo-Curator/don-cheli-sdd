@@ -10,6 +10,13 @@ export interface AgentResult {
   costUsd?: number;
 }
 
+export interface ParsedResponse {
+  /** Plain text response from the model (signal-checking + downstream use) */
+  text: string;
+  tokensUsed: number;
+  costUsd: number;
+}
+
 export interface AgentProvider {
   readonly name: string;
   readonly model: string;
@@ -22,6 +29,14 @@ export interface AgentProvider {
 
   /** Parse completion signal from output */
   isComplete(output: string, signal: string): boolean;
+
+  /**
+   * Parse the raw stdout produced by the CLI into structured data. Providers
+   * that emit JSON envelopes (Claude Code with --output-format json) can
+   * extract real token usage and cost here; plain-text providers fall back
+   * to returning the raw text with zero cost.
+   */
+  parseResponse?(rawOutput: string): ParsedResponse;
 
   /** Estimate cost for a prompt (tokens) */
   estimateCost(promptLength: number): { tokens: number; costUsd: number };

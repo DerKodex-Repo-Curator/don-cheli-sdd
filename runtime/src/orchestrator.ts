@@ -26,6 +26,7 @@ import { specGate } from "./gates/spec-gate.js";
 import { tddGate } from "./gates/tdd-gate.js";
 import { customGates } from "./gates/custom-gate.js";
 import { designGate } from "./gates/design-gate.js";
+import { questionsGate, buildAnsweredContext } from "./gates/questions-gate.js";
 import {
   createWorktree, commitWorktree, mergeWorktree,
   cleanupWorktree, isGitRepo
@@ -51,6 +52,8 @@ export interface OrchestratorConfig {
   budgetUsd?: number;
   dryRun?: boolean;
   noDocker?: boolean;
+  /** Run the pipeline in an isolated git worktree instead of the project dir. */
+  useWorktree?: boolean;
 }
 
 /**
@@ -98,20 +101,25 @@ const COMPLETION_SIGNAL = "DC_PHASE_COMPLETE";
 // ═══════════════════════════════════════════════════════════════
 
 function runGatesForPhase(phase: PhaseName, projectDir: string): boolean {
+  // Every phase ends with the questions gate so Claude can ask the user mid-
+  // pipeline. The gate is a no-op when no questions were raised.
   const gates: Record<PhaseName, (() => { passed: boolean; message: string; details?: string[] })[]> = {
-    specify: [() => specGate(projectDir)],
-    clarify: [() => specGate(projectDir)],
-    plan: [],
-    design: [],
+    specify:   [() => specGate(projectDir), () => questionsGate(projectDir)],
+    clarify:   [() => specGate(projectDir), () => questionsGate(projectDir)],
+    plan:      [() => questionsGate(projectDir)],
+    design:    [() => questionsGate(projectDir)],
     breakdown: [
       () => designGate(projectDir),
+      () => questionsGate(projectDir),
     ],
     implement: [
       () => tddGate(projectDir),
       () => customGates(projectDir),
+      () => questionsGate(projectDir),
     ],
     review: [
       () => customGates(projectDir),
+      () => questionsGate(projectDir),
     ],
   };
 
@@ -140,7 +148,7 @@ function runGatesForPhase(phase: PhaseName, projectDir: string): boolean {
 // PHASE EXECUTORS
 // ═══════════════════════════════════════════════════════════════
 
-function buildPhasePrompt(phase: PhaseName, task: string): string {
+function buildPhasePrompt(phase: PhaseName, task: string, projectDir?: string): string {
   const { dcCommand, description } = PHASE_COMMANDS[phase];
 
   const phaseInstructions: Record<PhaseName, string> = {
@@ -167,7 +175,32 @@ Build components bottom-up: Atoms → Molecules → Organisms → Templates → 
 
 Read .dc/specs/spec.feature and .dc/blueprints/blueprint.md to extract all screens needed.
 
-CREATE THE FOLLOWING STRUCTURE:
+═══════════════════════════════════════════════════════════════════════════
+PRE-DESIGN — DESIGN RESEARCH (MCP tools available in this session)
+═══════════════════════════════════════════════════════════════════════════
+
+BEFORE writing any HTML, check whether the following MCP servers are available
+in your tool list and use them when they are:
+
+▸ MOBBIN MCP (mcp__mobbin__*):
+  600,000+ real screens from shipped products. Search BEFORE designing to find
+  proven patterns for the screens you need (onboarding, paywalls, dashboards,
+  forms, etc.). For each main screen, run 1-2 Mobbin searches. Save the
+  references you used to .dc/design/research/mobbin-refs.json as:
+    [{ "screen": "login", "query": "onboarding", "refs": ["<url1>", "<url2>"], "takeaways": "..." }]
+  If Mobbin MCP is NOT in your tool list, skip silently — do not fail.
+
+▸ STITCH MCP (mcp__stitch__*):
+  Google Stitch can host your HTML mockups and produce a shareable link.
+  AFTER generating .dc/design/index.html, .dc/design/pages/*.html and the
+  design tokens, use Stitch MCP to upload them and obtain a project URL.
+  Save the URL to approval.json as "stitch_url" (see schema below).
+  If Stitch MCP is NOT in your tool list, skip silently and leave stitch_url
+  as null — the HTML files alone are still usable.
+
+═══════════════════════════════════════════════════════════════════════════
+CREATE THE FOLLOWING STRUCTURE
+═══════════════════════════════════════════════════════════════════════════
 
 1. .dc/design/tokens/colors.json — Color palette with primary (50-900), neutral (0-1000), semantic (success/warning/error/info)
 2. .dc/design/tokens/typography.json — Font families, sizes (xs to 5xl), weights, line heights
@@ -195,19 +228,36 @@ CREATE THE FOLLOWING STRUCTURE:
    - Responsive: mobile-first (375px), tablet (768px), desktop (1440px)
    - Include states: normal, empty, loading (skeleton), error
    - Accessible: semantic HTML, ARIA labels, focus visible, contrast 4.5:1, touch targets 44px
+   - If Mobbin refs were collected, draw inspiration from them — don't copy verbatim
 
 8. .dc/design/index.html — Component catalog + page navigation hub
 
-9. .dc/design/design-system.md — Documentation of all design decisions
+9. .dc/design/design-system.md — Documentation of all design decisions, including
+   a "Design research" section listing Mobbin references used (if any).
 
 10. .dc/design/approval.json:
-    { "version": 1, "status": "approved", "provider": "html", "link": ".dc/design/index.html",
-      "screens_count": [N], "design_system": { "style": "[NAME]", "primary": "[HEX]",
-      "font_heading": "[FONT]", "font_body": "[FONT]" },
-      "approver": null, "approved_at": null, "history": [{ "action": "created", "at": "[NOW]" }] }
+    {
+      "version": 1,
+      "status": "in_review",
+      "provider": "html",
+      "link": ".dc/design/index.html",
+      "stitch_url": "<URL returned by Stitch MCP, or null if not used>",
+      "mobbin_research_count": <number of Mobbin references collected, or 0>,
+      "screens_count": [N],
+      "design_system": { "style": "[NAME]", "primary": "[HEX]",
+                         "font_heading": "[FONT]", "font_body": "[FONT]" },
+      "approver": null,
+      "approved_at": null,
+      "history": [{ "action": "created", "at": "[NOW]" }]
+    }
+
+CRITICAL — approval flow:
+- ALWAYS write approval.json with status="in_review". NEVER write "approved".
+- The pipeline will PAUSE after this phase and wait for the human to approve the
+  design from Don Cheli Studio (the "Diseño" tab on their project page).
+- Your job ends when the mockups are generated and approval.json says "in_review".
 
 RULES:
-- Set approval.json status to "approved" so pipeline continues automatically
 - Every HTML file must be COMPLETE and functional, not a placeholder
 - Use consistent design tokens across ALL components
 - Mobile-first: design for 375px first, then scale up
@@ -248,14 +298,53 @@ CRITICAL: Tests MUST actually exist as files and contain real assertions (expect
 - Confirm no // TODO stubs remain`,
   };
 
+  // Inject any answered questions from previous phases as authoritative context.
+  const answeredContext = projectDir ? buildAnsweredContext(projectDir) : "";
+
+  // Interactive Q&A protocol — Claude CAN ask the human user during this phase.
+  // This is what gives the runtime bidirectional comms with Don Cheli Studio.
+  const questionProtocol = `
+
+INTERACTIVE Q&A PROTOCOL:
+If during this phase you encounter a decision that REQUIRES user input — a
+business rule you can't infer, a choice between architecturally equivalent
+approaches, a credential / endpoint / target you don't have — you can ASK
+the user directly via Don Cheli Studio instead of guessing or using
+placeholders.
+
+To ask, APPEND a JSON line to .dc/questions/pending.jsonl (one question per
+line, no commas between lines). Schema:
+
+  {"id":"q-<short-slug>","phase":"${phase}","question":"<one sentence in user's language>","kind":"text"|"choice"|"boolean","options":["a","b"],"default":"...","context":"why you need this","urgency":"blocking"|"informative"}
+
+Rules:
+- Use "blocking" only when you literally cannot make a sensible default. The
+  pipeline will pause until the user answers. Default is "informative".
+- Use "choice" when there's a small set of valid answers; provide "options".
+- Use "boolean" for yes/no.
+- Ask the FEWEST possible questions — only what you can't reasonably decide.
+- Phrase questions in the user's natural language (Spanish if the task is
+  in Spanish). Provide concrete examples.
+- Don't ask about anything already covered by the spec/blueprint — assume
+  the user wrote those carefully.
+- Don't ask about coding style, file names, or things you can decide
+  yourself. Take the call and document it.
+- After writing pending.jsonl entries, KEEP WORKING on what you can do
+  without those answers. The gate at the end of the phase will block if
+  needed.
+- DO NOT modify or read answers.jsonl yourself — that file is written by
+  Don Cheli Studio when the user responds. The next phase will receive
+  the answers as context.`;
+
   return `You are executing phase "${dcCommand}" of the Don Cheli SDD pipeline.
 
-TASK: ${task}
+TASK: ${task}${answeredContext}
 
 PHASE: ${dcCommand} — ${description}
 
 INSTRUCTIONS:
 ${phaseInstructions[phase]}
+${questionProtocol}
 
 IMPORTANT:
 - Create real files with real content (not placeholders)
@@ -263,31 +352,60 @@ IMPORTANT:
 - When done, output exactly: ${COMPLETION_SIGNAL}`;
 }
 
+interface PhaseExecResult {
+  passed: boolean;
+  output: string;
+  tokensUsed: number;
+  costUsd: number;
+}
+
 async function executeInDocker(
-  phase: PhaseName, task: string, provider: AgentProvider, containerName: string
-): Promise<{ passed: boolean; output: string }> {
-  const prompt = buildPhasePrompt(phase, task);
+  phase: PhaseName, task: string, provider: AgentProvider, containerName: string, workDir: string
+): Promise<PhaseExecResult> {
+  const prompt = buildPhasePrompt(phase, task, workDir);
   const result = await execInContainerStream(
     containerName,
     provider.buildDockerCommand(prompt),
     (data) => process.stdout.write(data),
     { timeout: 15 * 60 * 1000 },
   );
-  return {
-    passed: result.output.includes(COMPLETION_SIGNAL) || result.exitCode === 0,
-    output: result.output,
-  };
+  return extractCost(provider, result.output, result.exitCode === 0);
 }
 
 async function executeLocal(
   phase: PhaseName, task: string, provider: AgentProvider, workDir: string
-): Promise<{ passed: boolean; output: string }> {
-  const prompt = buildPhasePrompt(phase, task);
+): Promise<PhaseExecResult> {
+  const prompt = buildPhasePrompt(phase, task, workDir);
   const { command, args } = provider.buildCommand(prompt);
   const result = await execLocal(command, args, workDir, (data) => {
     process.stdout.write(data);
   }, { timeout: 10 * 60 * 1000, completionSignal: COMPLETION_SIGNAL });
-  return { passed: result.completed || result.exitCode === 0, output: result.output };
+  return extractCost(provider, result.output, result.completed || result.exitCode === 0);
+}
+
+/**
+ * Run the provider's response parser (if any) to extract real cost from
+ * the CLI output. Returns the model's text response (so completion-signal
+ * detection still works) plus token/cost data when available.
+ */
+function extractCost(
+  provider: AgentProvider, rawOutput: string, exitOk: boolean
+): PhaseExecResult {
+  let output = rawOutput;
+  let tokensUsed = 0;
+  let costUsd = 0;
+
+  if (typeof provider.parseResponse === "function") {
+    try {
+      const parsed = provider.parseResponse(rawOutput);
+      output = parsed.text;
+      tokensUsed = parsed.tokensUsed;
+      costUsd = parsed.costUsd;
+    } catch { /* fall through with raw output */ }
+  }
+
+  const passed = output.includes(COMPLETION_SIGNAL) || exitOk;
+  return { passed, output, tokensUsed, costUsd };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -356,14 +474,26 @@ export async function orchestrate(config: OrchestratorConfig): Promise<boolean> 
   const stateManager = new StateManager(projectDir);
   const existingState = stateManager.load();
 
-  if (existingState && !config.singlePhase) {
-    const nextPhase = stateManager.getNextPhase();
-    if (nextPhase) {
-      log.warn(`Crash recovery: resuming from ${PHASE_COMMANDS[nextPhase].dcCommand}`);
-      const idx = phases.indexOf(nextPhase);
-      if (idx > 0) phases.splice(0, idx);
-    }
+  // Decide whether we're resuming a crashed run or starting fresh.
+  // We resume ONLY if the previous state has a phase still in progress
+  // ("running"/"pending" between passed phases). If every phase is terminal
+  // (all passed, or any failed but none pending), treat it as stale and
+  // reset — otherwise a new run inherits the old state and exits immediately.
+  const isResumable = !!existingState
+    && !config.singlePhase
+    && stateManager.getNextPhase() !== null
+    && existingState.phases.some((p) => p.status === "running" || p.status === "pending")
+    && existingState.task === config.task;
+
+  if (isResumable) {
+    const nextPhase = stateManager.getNextPhase()!;
+    log.warn(`Crash recovery: resuming from ${PHASE_COMMANDS[nextPhase].dcCommand}`);
+    const idx = phases.indexOf(nextPhase);
+    if (idx > 0) phases.splice(0, idx);
   } else {
+    if (existingState) {
+      log.info("Previous state is stale — starting fresh");
+    }
     stateManager.init(config.task, config.provider, provider.model, useDocker ? "docker" : "local");
   }
 
@@ -454,15 +584,33 @@ export async function orchestrate(config: OrchestratorConfig): Promise<boolean> 
 
         // Execute the REAL /dc:* command
         const result = containerName
-          ? await executeInDocker(phase, config.task, provider, containerName)
+          ? await executeInDocker(phase, config.task, provider, containerName, workDir)
           : await executeLocal(phase, config.task, provider, workDir);
 
-        // Commit in worktree
+        // Record real token + cost spend (Claude Code's session cost)
+        if (result.tokensUsed > 0 || result.costUsd > 0) {
+          stateManager.addCost(result.tokensUsed, result.costUsd);
+          log.info(`Cost: $${result.costUsd.toFixed(4)} (+${result.tokensUsed} tokens)`);
+        }
+
+        // Commit in worktree. Keep the headline short — the long user task
+        // is in spec.md / plan.md / etc., not in every commit message.
         if (worktreeInfo) {
-          const sha = commitWorktree(workDir, `dc(${phase}): ${config.task}`);
-          if (sha) {
-            phaseCommits++;
-            log.info(`Committed: ${sha.substring(0, 7)}`);
+          const headline = `dc(${phase}): attempt ${attempt}`;
+          const body = config.task.length > 200
+            ? config.task.slice(0, 200) + "…"
+            : config.task;
+          const message = `${headline}\n\nTask:\n${body}`;
+          try {
+            const sha = commitWorktree(workDir, message);
+            if (sha) {
+              phaseCommits++;
+              log.info(`Committed: ${sha.substring(0, 7)}`);
+            } else {
+              log.warn(`No changes to commit for ${dcCommand}`);
+            }
+          } catch (err) {
+            log.fail(`Commit failed for ${dcCommand}: ${(err as Error).message}`);
           }
         }
 
@@ -504,16 +652,20 @@ export async function orchestrate(config: OrchestratorConfig): Promise<boolean> 
   if (worktreeInfo) {
     if (allPassed) {
       log.success("All phases passed — merging to project...");
-      const merged = mergeWorktree(projectDir, worktreeInfo);
-      if (merged) {
-        log.success("✅ Worktree merged — project updated with verified code");
+      const result = mergeWorktree(projectDir, worktreeInfo);
+      if (result.merged) {
+        log.success(`✅ Worktree merged — ${result.commitsAhead} commit(s) brought into ${worktreeInfo.baseBranch}`);
+        cleanupWorktree(projectDir, worktreeInfo);
       } else {
-        log.fail("Merge failed — worktree preserved at: " + worktreeInfo.path);
+        // Preserve branch + worktree so the user doesn't lose work.
+        log.fail(`Merge failed: ${result.reason} — branch ${worktreeInfo.branch} preserved`);
+        log.info(`Recover with: git checkout ${worktreeInfo.branch}  (or copy from ${worktreeInfo.path})`);
+        cleanupWorktree(projectDir, worktreeInfo, { preserveBranch: true });
       }
     } else {
-      log.warn("Pipeline failed — project UNTOUCHED (worktree discarded)");
+      log.warn("Pipeline failed — branch preserved for inspection: " + worktreeInfo.branch);
+      cleanupWorktree(projectDir, worktreeInfo, { preserveBranch: true });
     }
-    cleanupWorktree(projectDir, worktreeInfo);
   }
 
   // ── Summary ──

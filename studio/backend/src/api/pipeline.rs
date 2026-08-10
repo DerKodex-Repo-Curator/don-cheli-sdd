@@ -53,14 +53,15 @@ pub async fn start(
     let task = payload.task.clone();
     let no_docker = payload.no_docker.unwrap_or(false);
     let budget = payload.budget_usd;
+    let state_clone = state.clone();
+    let run_id_for_watcher = run_id.clone();
 
     // Spawn pipeline in background
     tokio::spawn(async move {
-        // Start file watcher for state.json
-        let tx_watcher = tx.clone();
+        // Start file watcher for state.json (also syncs into the DB)
         let watcher_path = project_path.clone();
         tokio::spawn(async move {
-            if let Err(e) = watcher::watch_state(&watcher_path, tx_watcher).await {
+            if let Err(e) = watcher::watch_state(&watcher_path, run_id_for_watcher, state_clone).await {
                 tracing::error!("State watcher error: {}", e);
             }
         });

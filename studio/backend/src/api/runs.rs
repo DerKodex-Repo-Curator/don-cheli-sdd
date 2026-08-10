@@ -1,13 +1,7 @@
-use axum::{Json, extract::{Path, Query, State}, http::StatusCode};
-use serde::Deserialize;
+use axum::{Json, extract::{Path, State}, http::StatusCode};
 use std::sync::Arc;
 use crate::AppState;
 use crate::db::{PipelineRun, PhaseRecord};
-
-#[derive(Deserialize)]
-pub struct RunsQuery {
-    pub status: Option<String>,
-}
 
 pub async fn list_active(State(state): State<Arc<AppState>>) -> Result<Json<Vec<PipelineRun>>, StatusCode> {
     state.db.list_active_runs().map(Json).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)

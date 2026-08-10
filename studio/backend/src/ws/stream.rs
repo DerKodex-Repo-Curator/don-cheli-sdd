@@ -9,7 +9,6 @@ use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
 
 use crate::AppState;
-use super::WsMessage;
 
 pub async fn ws_handler(
     ws: WebSocketUpgrade,

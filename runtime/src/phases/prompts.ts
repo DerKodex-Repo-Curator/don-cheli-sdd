@@ -74,6 +74,21 @@ STEPS:
 
 Write blueprint to .dc/blueprints/. When done, output: ${SIGNAL}`,
 
+    design: `${base}
+PHASE: DESIGN (UI/UX)
+TASK: Produce the UI design for the specified screens.
+${context ? `CONTEXT:\n${context}\n` : ""}
+YOUR JOB: Generate UI/UX designs with Atomic Design (Atoms → Molecules → Organisms → Templates → Pages).
+
+STEPS:
+1. Read .dc/specs/*.feature and .dc/blueprints/ to extract every screen needed
+2. Create .dc/design/ with design tokens (color, type, spacing, radius)
+3. Generate .dc/design/index.html plus one .dc/design/pages/<screen>.html per screen
+4. Cover every P1 scenario with at least one screen
+5. Write .dc/design/approval.json with the screen list and approval state
+
+Write files directly. When done, output: ${SIGNAL}`,
+
     breakdown: `${base}
 PHASE: BREAKDOWN (TDD Task Decomposition)
 TASK: Break the blueprint into TDD tasks.

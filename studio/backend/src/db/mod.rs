@@ -148,10 +148,10 @@ impl Database {
             params![run.id, run.project_id, run.task, run.provider, run.model, run.status, run.total_cost, run.started_at, run.signer],
         )?;
 
-        // Create phase records
+        // Phase records matching the actual runtime pipeline (6 phases, no design step)
         let phases = [
             ("specify", "/dc:especificar"), ("clarify", "/dc:clarificar"),
-            ("plan", "/dc:planificar-tecnico"), ("design", "/dc:diseñar-ui"),
+            ("plan", "/dc:planificar-tecnico"),
             ("breakdown", "/dc:desglosar"), ("implement", "/dc:implementar"),
             ("review", "/dc:revisar"),
         ];
@@ -267,5 +267,130 @@ impl Database {
 
     pub fn update_run_status(&self, run_id: &str, status: &str, error: Option<&str>) -> Result<()> {
         self.update_run(run_id, status, None, error)
+    }
+
+    /// Sync the runtime's state.json into the DB:
+    ///   - `pipeline_runs.current_phase` / `total_cost` / `status` / `completed_at`
+    ///   - `phase_records.status` / `started_at` / `completed_at` / `duration_ms` / `cost_usd`
+    ///
+    /// Returns `Ok(true)` if anything changed. Idempotent.
+    pub fn sync_run_state(&self, run_id: &str, state: &serde_json::Value) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+
+        let current_phase = state.get("currentPhase").and_then(|v| v.as_str());
+        let cost_usd = state.get("costUsd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let phases_arr = state.get("phases").and_then(|v| v.as_array());
+
+        let Some(phases) = phases_arr else { return Ok(false) };
+
+        // Derive overall run status from phases
+        let all_passed = phases.iter().all(|p| {
+            p.get("status").and_then(|v| v.as_str()) == Some("passed")
+        });
+        let any_failed = phases.iter().any(|p| {
+            p.get("status").and_then(|v| v.as_str()) == Some("failed")
+        });
+        let any_running = phases.iter().any(|p| {
+            p.get("status").and_then(|v| v.as_str()) == Some("running")
+        });
+
+        let derived_status = if all_passed { "passed" }
+            else if any_failed && !any_running { "failed" }
+            else if any_running { "running" }
+            else { "running" };
+
+        let completed_at = if derived_status == "passed" || derived_status == "failed" {
+            Some(Utc::now().to_rfc3339())
+        } else { None };
+
+        // Update the run row
+        conn.execute(
+            "UPDATE pipeline_runs
+                SET current_phase = ?1,
+                    total_cost = ?2,
+                    status = ?3,
+                    completed_at = COALESCE(completed_at, ?4)
+              WHERE id = ?5",
+            params![current_phase, cost_usd, derived_status, completed_at, run_id],
+        )?;
+
+        // Sync each phase record by name
+        let mut completed_costs: f64 = 0.0;
+        let mut running_phase_name: Option<String> = None;
+
+        for phase in phases {
+            let name = match phase.get("name").and_then(|v| v.as_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+            let status = phase.get("status").and_then(|v| v.as_str()).unwrap_or("pending");
+            let started_at = phase.get("startedAt").and_then(|v| v.as_str());
+            let completed_at_phase = phase.get("completedAt").and_then(|v| v.as_str());
+
+            let duration_ms: Option<i64> = match (started_at, completed_at_phase) {
+                (Some(s), Some(c)) => {
+                    let sd = chrono::DateTime::parse_from_rfc3339(s).ok();
+                    let cd = chrono::DateTime::parse_from_rfc3339(c).ok();
+                    match (sd, cd) {
+                        (Some(sd), Some(cd)) => Some((cd - sd).num_milliseconds().max(0)),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+
+            // Track for cost distribution
+            if status == "running" {
+                running_phase_name = Some(name.to_string());
+            }
+
+            conn.execute(
+                "UPDATE phase_records
+                    SET status = ?1,
+                        started_at = COALESCE(started_at, ?2),
+                        completed_at = COALESCE(completed_at, ?3),
+                        duration_ms = COALESCE(duration_ms, ?4)
+                  WHERE run_id = ?5 AND name = ?6",
+                params![status, started_at, completed_at_phase, duration_ms, run_id, name],
+            )?;
+        }
+
+        // Distribute total cost across phases.
+        // Strategy: if there's a running phase, attribute the cost not yet
+        // attributed to completed phases to it. Otherwise split equally among
+        // passed phases. Costs already set are preserved (we only fill in 0s).
+        let passed_phases: Vec<&str> = phases.iter()
+            .filter(|p| p.get("status").and_then(|v| v.as_str()) == Some("passed"))
+            .filter_map(|p| p.get("name").and_then(|v| v.as_str()))
+            .collect();
+
+        let n_passed = passed_phases.len();
+        let n_running = if running_phase_name.is_some() { 1 } else { 0 };
+        let total_active = n_passed + n_running;
+
+        if total_active > 0 && cost_usd > 0.0 {
+            let per_active = cost_usd / total_active as f64;
+
+            // Set running phase cost to per_active
+            if let Some(rn) = &running_phase_name {
+                conn.execute(
+                    "UPDATE phase_records SET cost_usd = ?1 WHERE run_id = ?2 AND name = ?3",
+                    params![per_active, run_id, rn],
+                )?;
+                completed_costs += per_active;
+            }
+
+            // Distribute the remainder evenly among already-passed phases
+            for name in &passed_phases {
+                conn.execute(
+                    "UPDATE phase_records SET cost_usd = ?1 WHERE run_id = ?2 AND name = ?3",
+                    params![per_active, run_id, name],
+                )?;
+                completed_costs += per_active;
+            }
+        }
+        let _ = completed_costs; // currently unused outside this scope
+
+        Ok(true)
     }
 }
