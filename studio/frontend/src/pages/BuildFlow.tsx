@@ -6,10 +6,11 @@ import {
   Link2, Mic, Video, Image, Sparkles,
 } from 'lucide-react';
 import { api, type PhaseInfo, type PipelineStatus } from '../lib/api';
-import { useWebSocket } from '../hooks/useWebSocket';
+import { useWebSocket, type HookEntry } from '../hooks/useWebSocket';
 import { FolderPicker } from '../components/FolderPicker';
 import { FilePicker } from '../components/FilePicker';
 import { PlanReview } from '../components/PlanReview';
+import { ActivityStream } from '../components/ActivityStream';
 
 // ── Flow steps ──
 type Step = 'folder' | 'requirements' | 'plan' | 'executing';
@@ -149,7 +150,7 @@ export function BuildFlow() {
     try {
       const [s, p] = await Promise.all([api.pipeline.status(projectId), api.pipeline.phases(projectId)]);
       setStatus(s); setPhases(p);
-    } catch {}
+    } catch { /* keep last known pipeline state */ }
   }, [projectId]);
 
   useEffect(() => { if (ws.pipelineState && step === 'executing') refreshPipeline(); }, [ws.pipelineState, step, refreshPipeline]);
@@ -159,7 +160,7 @@ export function BuildFlow() {
   const handleFileSelect = async (path: string, name: string) => {
     setShowFilePicker(false);
     let content: string | undefined;
-    try { const r = await fetch(`/api/filesystem/read-file?path=${encodeURIComponent(path)}`); if (r.ok) content = (await r.json()).content; } catch {}
+    try { const r = await fetch(`/api/filesystem/read-file?path=${encodeURIComponent(path)}`); if (r.ok) content = (await r.json()).content; } catch { /* attach without preview */ }
     if (filePickerTarget === 'upload') setAttachedFiles(p => [...p, { name, path, content }]);
     else setSources(p => [...p, { id: crypto.randomUUID(), type: 'file', name, value: path, content }]);
   };
@@ -568,7 +569,7 @@ export function BuildFlow() {
 
 function ExecutionDashboard({ projectId, phases, status, ws, provider, signerName, isFree, onStop, onRefresh }: {
   projectId: string | null; phases: PhaseInfo[]; status: PipelineStatus | null;
-  ws: { events: { type: string; data: Record<string, unknown> }[]; logs: { line: string; timestamp: string; stream?: string }[]; clearLogs: () => void };
+  ws: { events: { type: string; data: Record<string, unknown> }[]; logs: { line: string; timestamp: string; stream?: string }[]; hookEvents: HookEntry[]; clearLogs: () => void };
   provider: string; signerName: string; isFree: boolean;
   onStop: () => void; onRefresh: () => void;
 }) {
@@ -623,7 +624,7 @@ function ExecutionDashboard({ projectId, phases, status, ws, provider, signerNam
       }
       setDiagnosis(null);
       onRefresh();
-    } catch {}
+    } catch { /* surfaced by the next refresh */ }
     setTimeout(() => setRetrying(false), 5000);
   };
 
@@ -921,6 +922,21 @@ function ExecutionDashboard({ projectId, phases, status, ws, provider, signerNam
               {!diagnosis && !diagLoading && <div className="px-3 py-2 text-[10px]" style={{ color: '#F8717199' }}>Failed. Click Retry.</div>}
             </div>
           )}
+        </div>
+      </div>
+
+      {/* ═══ EXTERNAL ACTIVITY (Claude/Codex/OpenCode hooks) ═══ */}
+      <div style={{ background: '#0C0C0E', borderTop: '1px solid #2A2A30' }}>
+        <div className="flex items-center justify-between px-4 py-2" style={{ borderBottom: '1px solid #2A2A30' }}>
+          <div className="flex items-center gap-2">
+            <div className="w-1.5 h-1.5 rounded-full" style={{ background: ws.hookEvents.length > 0 ? '#4ADE80' : '#56565E' }} />
+            <span className="text-[10px] uppercase tracking-widest" style={{ color: '#E8E8EC' }}>External Activity</span>
+            <span className="text-[10px]" style={{ color: '#56565E' }}>Claude · Codex · OpenCode hooks</span>
+          </div>
+          <span className="text-[10px]" style={{ color: '#56565E' }}>{ws.hookEvents.length} events</span>
+        </div>
+        <div style={{ padding: '12px 16px', maxHeight: '260px', minHeight: '120px', overflow: 'hidden' }}>
+          <ActivityStream events={ws.hookEvents} />
         </div>
       </div>
     </div>
