@@ -25,7 +25,11 @@ export function Dashboard({ onSelectProject }: Props) {
   };
 
   useEffect(() => {
-    loadProjects();
+    let cancelled = false;
+    api.projects.list()
+      .then((list) => { if (!cancelled) setProjects(list); })
+      .catch(() => { if (!cancelled) setError('Failed to load projects'); });
+    return () => { cancelled = true; };
   }, []);
 
   const handleAdd = async () => {

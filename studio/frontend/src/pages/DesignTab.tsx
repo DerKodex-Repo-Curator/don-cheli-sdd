@@ -138,7 +138,7 @@ export function DesignTab({ projectId, projectName }: Props) {
   };
 
   // ── All hooks must run BEFORE any conditional return (Rules of Hooks). ──
-  const mockups = data?.mockups ?? [];
+  const mockups = useMemo(() => data?.mockups ?? [], [data]);
   const approval = data?.approval;
   const hasStitch = !!data?.stitch_url && !!data?.stitch_project_id;
   const hasDesigns = mockups.length > 0 || hasStitch;
@@ -1082,6 +1082,7 @@ function StitchDesignPanel({
 
       {screens.length > 0 && (
         <ScreenPreviewsGrid
+          key={projectId}
           projectId={projectId}
           stitchUrl={stitchUrl}
           fallbackScreens={screens}
@@ -1102,10 +1103,10 @@ function ScreenPreviewsGrid({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // loading starts true and the component is keyed by projectId upstream, so
+  // there is nothing to reset synchronously here.
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setError(null);
     api.design.screenPreviews(projectId)
       .then((r) => { if (!cancelled) setPreviews(r.previews); })
       .catch((e) => {

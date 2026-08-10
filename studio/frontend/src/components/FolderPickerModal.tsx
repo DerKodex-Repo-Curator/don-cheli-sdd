@@ -12,55 +12,57 @@ interface Props {
   initialPath?: string;
 }
 
-export function FolderPickerModal({ open, onClose, onSelect, initialPath }: Props) {
-  const [path, setPath] = useState<string>('');
+// Mounting the picker only while open gives every session fresh state, so no
+// effect has to reset it on reopen.
+export function FolderPickerModal({ open, ...props }: Props) {
+  if (!open) return null;
+  return <FolderPicker {...props} />;
+}
+
+function FolderPicker({ onClose, onSelect, initialPath }: Omit<Props, 'open'>) {
+  const [path, setPath] = useState<string>(initialPath ?? '');
   const [parent, setParent] = useState<string | null>(null);
   const [entries, setEntries] = useState<DirEntry[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
 
-  // Load directory whenever path changes
+  // Load directory whenever path changes. `loading`/`error` are handled by
+  // navigate() and by the promise callbacks, never synchronously in the body.
   useEffect(() => {
-    if (!open) return;
     let cancelled = false;
-    setLoading(true);
-    setError(null);
 
-    api.filesystem.browse(path || initialPath)
+    api.filesystem.browse(path)
       .then((res) => {
         if (cancelled) return;
         setPath(res.current);
         setParent(res.parent);
         setEntries(res.entries.filter((e) => e.is_dir));
+        setLoading(false);
       })
       .catch((e) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => { if (!cancelled) setLoading(false); });
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : String(e));
+        setLoading(false);
+      });
 
     return () => { cancelled = true; };
-  }, [path, open, initialPath]);
+  }, [path]);
 
-  // Reset state when reopened
-  useEffect(() => {
-    if (open) {
-      setCreating(false);
-      setNewName('');
-      setError(null);
-      // Trigger fresh load with initialPath
-      setPath(initialPath ?? '');
-    }
-  }, [open, initialPath]);
+  const navigate = (next: string) => {
+    if (next === path) return;
+    setLoading(true);
+    setError(null);
+    setPath(next);
+  };
 
   // ESC to close
   useEffect(() => {
-    if (!open) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  }, [onClose]);
 
   const handleCreate = async () => {
     const name = newName.trim();
@@ -74,8 +76,6 @@ export function FolderPickerModal({ open, onClose, onSelect, initialPath }: Prop
       setError(e instanceof Error ? e.message : 'No se pudo crear la carpeta');
     }
   };
-
-  if (!open) return null;
 
   return (
     <div
@@ -132,8 +132,8 @@ export function FolderPickerModal({ open, onClose, onSelect, initialPath }: Prop
           padding: '10px 16px', borderBottom: `1px solid ${T.border}`,
           background: T.bgAlt, display: 'flex', gap: 8, alignItems: 'center',
         }}>
-          <NavButton title="Home" onClick={() => setPath('')} icon={Home} />
-          <NavButton title="Subir" disabled={!parent} onClick={() => parent && setPath(parent)} icon={ArrowUp} />
+          <NavButton title="Home" onClick={() => navigate('')} icon={Home} />
+          <NavButton title="Subir" disabled={!parent} onClick={() => parent && navigate(parent)} icon={ArrowUp} />
           <div style={{
             flex: 1, padding: '5px 10px', background: T.panel, borderRadius: 6,
             fontFamily: T.fontMono, fontSize: 11.5, color: T.textDim,
@@ -171,7 +171,7 @@ export function FolderPickerModal({ open, onClose, onSelect, initialPath }: Prop
           ) : entries.map((e, i) => (
             <div
               key={e.path}
-              onClick={() => setPath(e.path)}
+              onClick={() => navigate(e.path)}
               onDoubleClick={() => { onSelect(e.path); onClose(); }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 10,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { BuildFlow } from './pages/BuildFlow';
 import { Projects } from './pages/Projects';
 import { Historial } from './pages/Historial';
@@ -18,7 +18,7 @@ import './index.css';
 type AppRoute = StudioRoute | 'build' | 'proyecto-detalle' | 'nuevo-trabajo';
 
 function App() {
-  const [route, setRoute] = useState<AppRoute>('proyectos');
+  const [rawRoute, setRoute] = useState<AppRoute>('proyectos');
   const [pickerOpen, setPickerOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
@@ -54,12 +54,10 @@ function App() {
     setPickerOpen(false);
   }, [goToProjectDetail]);
 
-  // When the selected project disappears (e.g. deleted), bounce back to list.
-  useEffect(() => {
-    if (route === 'proyecto-detalle' && !selectedProjectId) {
-      setRoute('proyectos');
-    }
-  }, [route, selectedProjectId]);
+  // When the selected project disappears (e.g. deleted), the detail route is
+  // no longer valid. Derived during render so it never costs an extra pass.
+  const route: AppRoute =
+    rawRoute === 'proyecto-detalle' && !selectedProjectId ? 'proyectos' : rawRoute;
 
   // BuildFlow is the legacy dark-themed flow. Reserved for "+ Nuevo trabajo"
   // until that flow is ported into the redesign shell.

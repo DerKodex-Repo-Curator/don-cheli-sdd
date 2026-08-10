@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   FolderSearch, Upload, PenLine, FileText, X, ChevronRight, ChevronLeft,
   CheckCircle, XCircle, Loader, Clock, Shield,
@@ -145,15 +145,34 @@ export function BuildFlow() {
   const [pipelineError, setPipelineError] = useState<string | null>(null);
   const ws = useWebSocket(projectId);
 
-  const refreshPipeline = useCallback(async () => {
+  // Imperative refresh, for the callers that need to await it (start, stop,
+  // and the dashboard's manual refresh button).
+  const refreshPipeline = async () => {
     if (!projectId) return;
     try {
       const [s, p] = await Promise.all([api.pipeline.status(projectId), api.pipeline.phases(projectId)]);
-      setStatus(s); setPhases(p);
-    } catch { /* keep last known pipeline state */ }
-  }, [projectId]);
+      setStatus(s);
+      setPhases(p);
+    } catch {
+      /* keep last known pipeline state */
+    }
+  };
 
-  useEffect(() => { if (ws.pipelineState && step === 'executing') refreshPipeline(); }, [ws.pipelineState, step, refreshPipeline]);
+  // The websocket-driven refresh fetches inline so the effect depends on plain
+  // values instead of a memoized callback.
+  const pipelineState = ws.pipelineState;
+  useEffect(() => {
+    if (!projectId || !pipelineState || step !== 'executing') return;
+    let cancelled = false;
+    Promise.all([api.pipeline.status(projectId), api.pipeline.phases(projectId)])
+      .then(([s, p]) => {
+        if (cancelled) return;
+        setStatus(s);
+        setPhases(p);
+      })
+      .catch(() => { /* keep last known pipeline state */ });
+    return () => { cancelled = true; };
+  }, [projectId, pipelineState, step]);
 
   // ── Helpers ──
   const openFilePicker = (target: 'upload' | 'source') => { setFilePickerTarget(target); setShowFilePicker(true); };
@@ -577,7 +596,8 @@ function ExecutionDashboard({ projectId, phases, status, ws, provider, signerNam
   const [startTime] = useState(() => Date.now());
   const [diagnosis, setDiagnosis] = useState<{ error_details: string[]; suggestions: string[]; error_logs: string[] } | null>(null);
   const [retrying, setRetrying] = useState(false);
-  const [diagLoading, setDiagLoading] = useState(false);
+  const [diagFailed, setDiagFailed] = useState(false);
+  const diagRequested = useRef(false);
 
   const isRunning = status?.status === 'running';
   const currentPhase = phases.find(p => p.status === 'running');
@@ -586,6 +606,9 @@ function ExecutionDashboard({ projectId, phases, status, ws, provider, signerNam
   const progress = phases.length > 0 ? Math.round((passed / phases.length) * 100) : 0;
   const agent = currentPhase ? AGENTS.find(a => a.phase === currentPhase.name) : null;
   const needsAttention = failed > 0;
+  // Derived instead of stored: a failure with no diagnosis yet and no fetch
+  // error means the request is still in flight.
+  const diagLoading = needsAttention && !diagnosis && !diagFailed;
   const totalCost = phases.reduce((s, p) => s + (p.cost_usd || 0), 0);
   const allDone = passed === phases.length && phases.length > 0;
 
@@ -599,17 +622,18 @@ function ExecutionDashboard({ projectId, phases, status, ws, provider, signerNam
     return () => clearInterval(t);
   }, [onRefresh]);
 
-  // Auto-load diagnosis when failure detected
+  // Auto-load diagnosis when failure detected. The ref guard keeps a single
+  // request in flight; handleRetry clears it so a new failure re-diagnoses.
   useEffect(() => {
-    if (needsAttention && projectId && !diagnosis && !diagLoading) {
-      setDiagLoading(true);
-      fetch(`/api/pipeline/${projectId}/diagnosis`)
-        .then(r => r.json())
-        .then(d => setDiagnosis(d))
-        .catch(() => {})
-        .finally(() => setDiagLoading(false));
-    }
-  }, [needsAttention, projectId, diagnosis, diagLoading]);
+    if (!needsAttention || !projectId || diagRequested.current) return;
+    diagRequested.current = true;
+    let cancelled = false;
+    fetch(`/api/pipeline/${projectId}/diagnosis`)
+      .then(r => r.json())
+      .then(d => { if (!cancelled) setDiagnosis(d); })
+      .catch(() => { if (!cancelled) setDiagFailed(true); });
+    return () => { cancelled = true; };
+  }, [needsAttention, projectId]);
 
   const handleRetry = async () => {
     if (!projectId || retrying) return;
@@ -623,6 +647,8 @@ function ExecutionDashboard({ projectId, phases, status, ws, provider, signerNam
         // The backend already sends fix instructions via WebSocket
       }
       setDiagnosis(null);
+      setDiagFailed(false);
+      diagRequested.current = false;
       onRefresh();
     } catch { /* surfaced by the next refresh */ }
     setTimeout(() => setRetrying(false), 5000);

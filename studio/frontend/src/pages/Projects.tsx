@@ -75,13 +75,13 @@ export function Projects({
   projects, useMock = false, onNewProject, onImportProject, onOpenProject, onGoNow,
 }: Props) {
   const [remote, setRemote] = useState<ProjectCard[] | null>(null);
-  const [loading, setLoading] = useState(false);
+  // Starts true so the effect never has to flip it synchronously on mount.
+  const [loading, setLoading] = useState(() => !projects && !useMock);
   const [usingMock, setUsingMock] = useState(false);
 
   useEffect(() => {
     if (projects || useMock) return;
     let cancelled = false;
-    setLoading(true);
 
     const fetchOnce = () => api.projects.summary()
       .then((data) => {

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import {
   Play, Square, Upload, PenLine, FileText, X,
   CheckCircle, XCircle, Loader, Clock, AlertTriangle, Shield, TestTube,
@@ -55,7 +55,7 @@ interface Props {
 }
 
 export function PipelineTab({ pipeline, ws }: Props) {
-  const [step, setStep] = useState<FlowStep>('input');
+  const [chosenStep, setStep] = useState<FlowStep>('input');
   const [mode, setMode] = useState<InputMode>('choose');
   const [task, setTask] = useState('');
   const [provider, setProvider] = useState('claude');
@@ -73,8 +73,10 @@ export function PipelineTab({ pipeline, ws }: Props) {
   const isRunning = pipeline.status?.status === 'running';
   const hasRun = ws.logs.length > 0 || pipeline.phases.some(p => p.status !== 'pending');
 
-  useEffect(() => { if (isRunning && step !== 'executing') setStep('executing'); }, [isRunning, step]);
-  useEffect(() => { if (hasRun && step === 'input') setStep('executing'); }, [hasRun, step]);
+  // A live or already-started run always shows the execution view; derived so
+  // it never needs an effect to correct the stored step.
+  const step: FlowStep =
+    isRunning || (hasRun && chosenStep === 'input') ? 'executing' : chosenStep;
 
   const openFilePicker = (target: 'upload' | 'source') => { setFilePickerTarget(target); setShowFilePicker(true); };
 
@@ -84,7 +86,7 @@ export function PipelineTab({ pipeline, ws }: Props) {
     try {
       const res = await fetch(`/api/filesystem/read-file?path=${encodeURIComponent(path)}`);
       if (res.ok) content = (await res.json()).content;
-    } catch {}
+    } catch { /* attach without preview */ }
 
     if (filePickerTarget === 'upload') {
       setAttachedFiles(p => [...p, { name, path, content }]);

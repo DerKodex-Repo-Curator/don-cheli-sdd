@@ -579,7 +579,7 @@ function ConfiguracionTab({ project }: { project: Project }) {
 
       <GitHubCard projectId={project.id} />
 
-      <ServicesCard projectId={project.id} />
+      <ServicesCard key={project.id} projectId={project.id} />
 
       <div style={{
         padding: '14px 16px',
@@ -783,9 +783,10 @@ function ServicesCard({ projectId }: { projectId: string }) {
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
+  // Mounted with key={projectId}, so a project switch remounts with a fresh
+  // loading state instead of resetting it here.
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
     api.envInventory.get(projectId)
       .then((d) => { if (!cancelled) setData(d); })
       .catch(() => { /* ignore */ })

@@ -18,7 +18,13 @@ export function ProjectList({ onSelectProject }: Props) {
   const loadProjects = async () => {
     try { setProjects(await api.projects.list()); } catch { setError('Error loading projects'); }
   };
-  useEffect(() => { loadProjects(); }, []);
+  useEffect(() => {
+    let cancelled = false;
+    api.projects.list()
+      .then((list) => { if (!cancelled) setProjects(list); })
+      .catch(() => { if (!cancelled) setError('Error loading projects'); });
+    return () => { cancelled = true; };
+  }, []);
 
   const handleAdd = async () => {
     if (!name || !path) return;

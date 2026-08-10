@@ -21,13 +21,21 @@ export function ProjectView({ project, onBack }: Props) {
   const pipeline = usePipeline(project.id);
   const ws = useWebSocket(project.id);
 
-  useEffect(() => { pipeline.refresh(); }, [pipeline.refresh]);
-  useEffect(() => { if (ws.pipelineState) pipeline.refresh(); }, [ws.pipelineState, pipeline.refresh]);
+  const { refresh } = pipeline;
+  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { if (ws.pipelineState) refresh(); }, [ws.pipelineState, refresh]);
 
   const loadArtifacts = useCallback(async () => {
-    try { setArtifacts(await api.pipeline.artifacts(project.id)); } catch {}
+    try { setArtifacts(await api.pipeline.artifacts(project.id)); } catch { /* keep the last known artifacts */ }
   }, [project.id]);
-  useEffect(() => { loadArtifacts(); }, [loadArtifacts]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.pipeline.artifacts(project.id)
+      .then((a) => { if (!cancelled) setArtifacts(a); })
+      .catch(() => { /* keep the last known artifacts */ });
+    return () => { cancelled = true; };
+  }, [project.id]);
 
   const isRunning = pipeline.status?.status === 'running';
   const passedCount = pipeline.phases.filter(p => p.status === 'passed').length;
